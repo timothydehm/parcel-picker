@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parcel picker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root {
+    --ink: #16252B;
+    --muted: #5E6E72;
+    --panel: #F2F4F3;
+    --line: #D5DBD9;
+    --white: #FFFFFF;
+    --flag: #FF2E88;        /* selection on the map: flagging-tape pink */
+    --flag-deep: #C8125F;   /* pink for buttons and text on light backgrounds */
+    --sky: #1FB5E8;         /* "show a list" highlight */
+    --font: "Public Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: var(--font); color: var(--ink); background: var(--panel); font-size: 15px; line-height: 1.45; }
+
+  #app { display: grid; grid-template-columns: 330px 1fr; height: 100%; }
+  #panel { display: flex; flex-direction: column; gap: 18px; padding: 20px 18px; overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+  #mapwrap { position: relative; min-height: 0; }
+  #map { position: absolute; inset: 0; background: #2a3336; }
+
+  h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .sub { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0; }
+
+  input[type=text], input[type=url], textarea {
+    width: 100%; font: inherit; color: var(--ink); background: var(--white);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  }
+  textarea { min-height: 96px; resize: vertical; font-variant-numeric: tabular-nums; }
+  input:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--flag-deep); outline-offset: 2px;
+  }
+
+  button {
+    font: inherit; font-weight: 600; font-size: 14px; cursor: pointer;
+    border-radius: 6px; padding: 8px 12px; border: 1px solid var(--line);
+    background: var(--white); color: var(--ink);
+  }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { background: var(--flag-deep); border-color: var(--flag-deep); color: var(--white); }
+  button.primary:hover { background: #A80F50; border-color: #A80F50; }
+  button.link { border: none; background: none; padding: 4px 2px; color: var(--muted); font-weight: 500; text-decoration: underline; }
+
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; }
+
+  /* selection block */
+  #selection { background: var(--white); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .selhead { display: flex; justify-content: space-between; align-items: center; }
+  .count { display: flex; align-items: center; gap: 8px; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; background: var(--flag); flex: none; }
+  #selList { list-style: none; margin: 0; padding: 0; max-height: 34vh; overflow-y: auto; border-top: 1px solid var(--line); }
+  #selList li { display: flex; justify-content: space-between; align-items: center; padding: 5px 2px; border-bottom: 1px solid #EBEEED; font-variant-numeric: tabular-nums; }
+  #selList li button { border: none; background: none; padding: 2px 6px; color: var(--muted); font-size: 16px; line-height: 1; }
+  #selList li button:hover { color: var(--flag-deep); }
+  #selList .pin { cursor: pointer; }
+  #selList .pin:hover { text-decoration: underline; }
+  .empty { color: var(--muted); font-size: 14px; margin: 0; }
+  .copyrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .copyrow button { flex: 1; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+
+  details { border-top: 1px solid var(--line); padding-top: 12px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  details > .body { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .note { font-size: 13px; color: var(--muted); margin: 0; }
+  .note.err { color: #9B1C1C; }
+  .note.ok { color: #1E6B3A; }
+  label.stack { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+
+  .hint { margin-top: auto; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
+  .hint kbd { font-family: var(--font); font-size: 12px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--white); color: var(--ink); }
+
+  /* map overlays */
+  #mapnote {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 500;
+    background: rgba(22, 37, 43, 0.88); color: var(--white); font-size: 14px; font-weight: 500;
+    padding: 7px 14px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+  }
+  #mapnote[hidden] { display: none; }
+  #boxsel { position: absolute; z-index: 600; border: 2px solid var(--flag); background: rgba(255, 46, 136, 0.12); pointer-events: none; }
+  #boxsel.remove { border-color: var(--white); background: rgba(255, 255, 255, 0.12); border-style: dashed; }
+  #toast {
+    position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px); z-index: 700;
+    background: var(--ink); color: var(--white); padding: 9px 16px; border-radius: 8px; font-weight: 500;
+    opacity: 0; transition: opacity 160ms, transform 160ms; pointer-events: none;
+  }
+  #toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+
+  .pin-label {
+    background: none; border: none; color: var(--white); font: 600 11px var(--font);
+    text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 1px #000; white-space: nowrap; text-align: center;
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  .streets .pin-label { color: var(--ink); text-shadow: 0 0 3px #fff, 0 0 1px #fff; }
+  .pin-label.owner { font-size: 10px; line-height: 1.15; white-space: normal; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .leaflet-tooltip.pin-tip { font: 600 12px var(--font); font-variant-numeric: tabular-nums; }
+  .leaflet-tooltip.pin-tip .tip-owner { display: block; font-weight: 400; max-width: 260px; white-space: normal; }
+
+  /* owner tools */
+  #ownerTools { display: flex; flex-direction: column; gap: 10px; }
+  .seg { display: flex; align-items: center; }
+  .seg .lbl { margin-right: 10px; font-size: 14px; color: var(--muted); }
+  .seg button { border-radius: 0; padding: 6px 14px; }
+  .seg button + button { margin-left: -1px; }
+  .seg button:first-of-type { border-radius: 6px 0 0 6px; }
+  .seg button:last-of-type { border-radius: 0 6px 6px 0; }
+  .seg button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--white); }
+  .matchrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .matchrow .note { display: flex; align-items: center; gap: 6px; }
+  .swatch.amber { background: #FFC53D; }
+  #selList .own { flex: 1; min-width: 0; margin: 0 6px 0 10px; color: var(--muted); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+  .leaflet-container { font-family: var(--font); }
+
+  @media (max-width: 760px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    #panel { max-height: 48vh; border-right: none; border-bottom: 1px solid var(--line); }
+    #selList { max-height: 18vh; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <header>
+      <h1>Parcel picker</h1>
+      <p class="sub">Pick parcels on the map, then copy their PPNs into the register.</p>
+    </header>
+
+    <form id="searchForm" class="row" autocomplete="off">
+      <input type="text" id="q" placeholder="PPN or address" aria-label="Find a PPN or address">
+      <button type="submit">Find</button>
+    </form>
+
+    <section id="ownerTools">
+      <div class="seg" role="group" aria-label="Label parcels by">
+        <span class="lbl">Labels</span>
+        <button type="button" id="lblPin" aria-pressed="true">PPN</button>
+        <button type="button" id="lblOwner" aria-pressed="false">Owner</button>
+      </div>
+      <label class="stack">Highlight owners containing
+        <input type="text" id="ownerQ" placeholder="Part of an owner name" autocomplete="off">
+      </label>
+      <div class="matchrow">
+        <p class="note" id="ownerMsg"></p>
+        <button type="button" id="selectOwnerBtn" disabled>Select matches</button>
+      </div>
+    </section>
+
+    <section id="selection" aria-live="polite">
+      <div class="selhead">
+        <div class="count"><span class="swatch" aria-hidden="true"></span><h2 id="selCount">No parcels selected</h2></div>
+        <button class="link" id="clearBtn" type="button">Clear</button>
+      </div>
+      <ul id="selList"></ul>
+      <p class="empty" id="selEmpty">Click parcels on the map to add them here.</p>
+      <div class="copyrow">
+        <button class="primary" id="copyBtn" type="button" disabled>Copy PPNs</button>
+        <label class="check"><input type="checkbox" id="dashes" checked> Dashes</label>
+      </div>
+    </section>
+
+    <details id="showList">
+      <summary>Show a list on the map</summary>
+      <div class="body">
+        <textarea id="pasteIn" placeholder="Paste PPNs from any tab, one per line"></textarea>
+        <div class="row">
+          <button type="button" id="showBtn">Show on map</button>
+          <button type="button" id="selectShownBtn" disabled>Select these</button>
+          <button type="button" class="link" id="clearShownBtn">Clear</button>
+        </div>
+        <p class="note" id="showMsg"></p>
+      </div>
+    </details>
+
+    <details id="settings">
+      <summary>Parcel source</summary>
+      <div class="body">
+        <label class="stack">ArcGIS parcel service or layer URL
+          <input type="url" id="srcUrl" list="srcOptions" spellcheck="false">
+        </label>
+        <datalist id="srcOptions">
+          <option value="https://gis.cuyahogacounty.gov/server/rest/services/MyPlace/Full_Map_Parcel_Fabric/MapServer">
+          <option value="https://gis.cuyahogacounty.gov/server/rest/services/CCFO/Current_Year_Appraisal_Parcels/MapServer">
+          <option value="https://maps.cuyahogacounty.us/arcgis/rest/services/MyPLACE/Parcels_WGS84/MapServer">
+        </datalist>
+        <label class="stack">PPN field
+          <input type="text" id="pinField" placeholder="Found automatically" spellcheck="false">
+        </label>
+        <label class="stack">Owner field
+          <input type="text" id="ownerField" placeholder="Found automatically" spellcheck="false">
+        </label>
+        <div class="row"><button type="button" id="connectBtn">Connect</button></div>
+        <p class="note" id="srcStatus"></p>
+        <label class="stack" style="margin-top:6px">Or load a parcel file instead (GeoJSON)
+          <input type="file" id="fileIn" accept=".geojson,.json,application/geo+json,application/json">
+        </label>
+      </div>
+    </details>
+
+    <p class="hint">
+      Click a parcel to select or unselect it.<br>
+      <kbd>Shift</kbd> + drag to select a block.<br>
+      <kbd>Shift</kbd> + <kbd>Alt</kbd> + drag to unselect.
+    </p>
+  </aside>
+
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div id="mapnote" hidden></div>
+    <div id="toast" role="status"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- settings ----------
+  const DEFAULT_SRC = "https://gis.cuyahogacounty.gov/server/rest/services/MyPlace/Full_Map_Parcel_Fabric/MapServer";
+  const MIN_ZOOM = 16;       // parcels load at block level and closer
+  const LABEL_ZOOM = 18;     // PPN labels drawn on parcels at this zoom
+  const CLEVELAND = [41.4925, -81.6800];
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem("pp." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem("pp." + k, JSON.stringify(v)); } catch {} }
+  };
+
+  // ---------- helpers ----------
+  const $ = id => document.getElementById(id);
+  const norm = v => { const d = String(v ?? "").replace(/\D/g, ""); return d ? d.padStart(8, "0").slice(-8) : null; };
+  const dash = p => `${p.slice(0, 3)}-${p.slice(3, 5)}-${p.slice(5)}`;
+  const fmt = p => $("dashes").checked ? dash(p) : p;
+  const esc = s => String(s).replace(/'/g, "''");
+  let toastTimer;
+  function toast(msg) {
+    const t = $("toast"); t.textContent = msg; t.classList.add("on");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 1800);
+  }
+  function mapNote(msg) { const n = $("mapnote"); n.textContent = msg || ""; n.hidden = !msg; }
+
+  // ---------- state ----------
+  const state = {
+    layerUrl: null, pinField: null, geojson: false, fileMode: false,
+    byPin: new Map(),                       // pin -> Leaflet layer
+    selected: new Set(store.get("selected", [])),
+    shown: new Set(),
+    fetched: [],                            // bounds already loaded
+    streets: false,
+    ownerField: null,
+    ownerByPin: new Map(),                  // pin -> owner name
+    labelMode: store.get("labelMode", "pin"),
+    ownerQ: ""
+  };
+
+  // ---------- map ----------
+  const map = L.map("map", { boxZoom: false, preferCanvas: true, zoomControl: true }).setView(CLEVELAND, 13);
+  const esriAttr = "Imagery and streets &copy; Esri";
+  const aerial = L.layerGroup([
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: esriAttr }),
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, pane: "overlayPane", opacity: 0.9 })
+  ]);
+  const streets = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: esriAttr });
+  aerial.addTo(map);
+  L.control.layers({ "Aerial": aerial, "Streets": streets }, null, { position: "topright" }).addTo(map);
+  map.attributionControl.addAttribution("Parcels: Cuyahoga County");
+  map.on("baselayerchange", e => {
+    state.streets = e.layer === streets;
+    $("map").classList.toggle("streets", state.streets);
+    restyleAll();
+  });
+
+  // ---------- parcel styling ----------
+  function styleFor(pin) {
+    const sel = state.selected.has(pin), shown = state.shown.has(pin);
+    const line = state.streets ? "#16252B" : "#FFFFFF";
+    if (sel) return { color: shown ? "#1FB5E8" : "#FF2E88", weight: shown ? 3 : 2, opacity: 1, fillColor: "#FF2E88", fillOpacity: 0.4, dashArray: null };
+    if (shown) return { color: "#1FB5E8", weight: 3, opacity: 1, fillColor: "#1FB5E8", fillOpacity: 0.2, dashArray: "5 4" };
+    if (ownerMatch(pin)) return { color: "#FFC53D", weight: 2, opacity: 1, fillColor: "#FFC53D", fillOpacity: 0.35, dashArray: null };
+    return { color: line, weight: 1, opacity: state.streets ? 0.6 : 0.85, fillColor: line, fillOpacity: 0.03, dashArray: null };
+  }
+  function ownerMatch(pin) {
+    if (!state.ownerQ) return false;
+    const o = state.ownerByPin.get(pin);
+    return !!o && o.toLowerCase().includes(state.ownerQ);
+  }
+  const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  function restyle(pin) { const l = state.byPin.get(pin); if (l) l.setStyle(styleFor(pin)); }
+  function restyleAll() { state.byPin.forEach((l, pin) => l.setStyle(styleFor(pin))); refreshLabels(); }
+
+  const parcels = L.geoJSON(null, {
+    style: f => styleFor(f.properties.__pin),
+    onEachFeature: (f, layer) => {
+      const pin = f.properties.__pin;
+      state.byPin.set(pin, layer);
+      layer.bindTooltip(() => {
+        const o = state.ownerByPin.get(pin);
+        return escHtml(dash(pin)) + (o ? `<span class="tip-owner">${escHtml(o)}</span>` : "");
+      }, { sticky: true, direction: "top", className: "pin-tip", offset: [0, -6] });
+      layer.on("click", () => toggle(pin));
+      layer.on("mouseover", () => { if (!state.selected.has(pin)) layer.setStyle({ color: state.streets ? "#16252B" : "#FFFFFF", weight: 3.5, opacity: 1 }); });
+      layer.on("mouseout", () => layer.setStyle(styleFor(pin)));
+    }
+  }).addTo(map);
+
+  function addFeatures(features) {
+    let added = 0;
+    for (const f of features) {
+      const pin = norm(f.properties && f.properties[state.pinField]);
+      if (!pin || !f.geometry || state.byPin.has(pin)) continue;
+      if (state.ownerField) {
+        const o = f.properties[state.ownerField];
+        if (o != null && String(o).trim()) state.ownerByPin.set(pin, String(o).trim());
+      }
+      parcels.addData({ type: "Feature", geometry: f.geometry, properties: { __pin: pin } });
+      added++;
+    }
+    if (added) { refreshLabels(); updateOwnerMsg(); }
+    return added;
+  }
+
+  // ---------- labels at high zoom ----------
+  const labels = L.layerGroup().addTo(map);
+  function refreshLabels() {
+    labels.clearLayers();
+    if (map.getZoom() < LABEL_ZOOM) return;
+    const view = map.getBounds(); let n = 0;
+    for (const [pin, layer] of state.byPin) {
+      const c = layer.getBounds().getCenter();
+      if (!view.contains(c)) continue;
+      const byOwner = state.labelMode === "owner";
+      const text = byOwner ? (state.ownerByPin.get(pin) || "—") : dash(pin);
+      labels.addLayer(L.marker(c, { interactive: false, keyboard: false,
+        icon: byOwner
+          ? L.divIcon({ className: "pin-label owner", html: escHtml(text), iconSize: [120, 26], iconAnchor: [60, 13] })
+          : L.divIcon({ className: "pin-label", html: text, iconSize: [80, 14], iconAnchor: [40, 7] }) }));
+      if (++n > 400) break;
+    }
+  }
+
+  // ---------- esri json -> geojson (fallback) ----------
+  function esriToGeo(fs) {
+    return (fs.features || []).map(f => ({
+      type: "Feature", properties: f.attributes || {},
+      geometry: f.geometry && f.geometry.rings ? { type: "Polygon", coordinates: f.geometry.rings } : null
+    }));
+  }
+
+  async function getJSON(url, params, signal) {
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(url + (qs ? "?" + qs : ""), { signal });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (data && data.error) throw new Error(data.error.message || "Service error");
+    return data;
+  }
+
+  // query the parcel layer; returns GeoJSON-like features
+  async function queryParcels(extra, signal) {
+    const outFields = state.ownerField ? `${state.pinField},${state.ownerField}` : state.pinField;
+    const base = { outFields, returnGeometry: "true", outSR: "4326", ...extra };
+    let all = [], offset = 0, paging = state.paging !== false;
+    for (let page = 0; page < 6; page++) {
+      const params = { ...base, f: state.geojson ? "geojson" : "json" };
+      if (paging) params.resultOffset = offset;
+      let data;
+      try { data = await getJSON(state.layerUrl + "/query", params, signal); }
+      catch (e) {
+        if (e.name === "AbortError" || !paging || page > 0) throw e;
+        // service may not support paging: retry once without it
+        paging = false; state.paging = false;
+        delete params.resultOffset;
+        data = await getJSON(state.layerUrl + "/query", params, signal);
+      }
+      const feats = state.geojson ? (data.features || []) : esriToGeo(data);
+      all = all.concat(feats);
+      const more = data.exceededTransferLimit || (data.properties && data.properties.exceededTransferLimit);
+      if (!more || !feats.length || !paging) break;
+      offset += feats.length;
+    }
+    return all;
+  }
+
+  // ---------- load parcels in view ----------
+  let loadCtl = null, loadTimer = null;
+  function covered(b) { return state.fetched.some(f => f.contains(b)); }
+  async function loadView() {
+    if (state.fileMode) { mapNote(""); refreshLabels(); return; }
+    if (!state.layerUrl) { mapNote("Set a parcel source to load parcels"); return; }
+    if (map.getZoom() < MIN_ZOOM) { mapNote("Zoom in to see parcels"); refreshLabels(); return; }
+    const b = map.getBounds().pad(0.15);
+    if (covered(b)) { mapNote(""); refreshLabels(); return; }
+    if (loadCtl) loadCtl.abort();
+    loadCtl = new AbortController();
+    mapNote("Loading parcels…");
+    try {
+      const feats = await queryParcels({
+        where: "1=1",
+        geometry: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","),
+        geometryType: "esriGeometryEnvelope", inSR: "4326", spatialRel: "esriSpatialRelIntersects"
+      }, loadCtl.signal);
+      addFeatures(feats);
+      state.fetched.push(b);
+      mapNote("");
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      mapNote("Couldn't load parcels. Check the parcel source.");
+      console.error(e);
+    }
+  }
+  map.on("moveend", () => { clearTimeout(loadTimer); loadTimer = setTimeout(loadView, 250); refreshLabels(); });
+
+  // ---------- connect to a service ----------
+  const PIN_PATTERNS = [/^parcel_?pin$/i, /^ppn$/i, /^parcel_?id$/i, /^parcel_?number$/i, /^pin$/i, /pin/i];
+  function findPinField(fields) {
+    const names = (fields || []).map(f => f.name);
+    for (const re of PIN_PATTERNS) { const hit = names.find(n => re.test(n)); if (hit) return hit; }
+    return null;
+  }
+  const OWNER_PATTERNS = [/^deeded_?owner$/i, /^parcel_?owner$/i, /^owner_?name$/i, /^own_?name$/i, /^owner$/i, /^taxpayer_?name$/i, /owner/i];
+  function findOwnerField(fields) {
+    const names = (fields || []).map(f => f.name).filter(n => !/addr|city|state|zip|mail|date|occ/i.test(n));
+    for (const re of OWNER_PATTERNS) { const hit = names.find(n => re.test(n)); if (hit) return hit; }
+    return null;
+  }
+  function pickOwnerField(fieldNames) {
+    const typed = $("ownerField").value.trim();
+    if (typed && fieldNames.includes(typed)) return typed;
+    return findOwnerField(fieldNames.map(name => ({ name })));
+  }
+  async function connect(raw) {
+    const status = $("srcStatus");
+    const url = (raw || "").trim().replace(/\?.*$/, "").replace(/\/+$/, "");
+    if (!url) { status.className = "note err"; status.textContent = "Enter a service URL."; return; }
+    status.className = "note"; status.textContent = "Connecting…";
+    try {
+      let layerUrl = null, info = null;
+      if (/\/(MapServer|FeatureServer)\/\d+$/i.test(url)) {
+        info = await getJSON(url, { f: "json" }); layerUrl = url;
+      } else if (/\/(MapServer|FeatureServer)$/i.test(url)) {
+        const svc = await getJSON(url, { f: "json" });
+        const layers = (svc.layers || []).slice(0, 30);
+        const ordered = [...layers.filter(l => /parcel/i.test(l.name)), ...layers.filter(l => !/parcel/i.test(l.name))];
+        for (const l of ordered) {
+          const li = await getJSON(`${url}/${l.id}`, { f: "json" });
+          if (li.geometryType === "esriGeometryPolygon" && findPinField(li.fields)) { info = li; layerUrl = `${url}/${l.id}`; break; }
+        }
+        if (!layerUrl) throw new Error("No polygon layer with a PPN field found in that service.");
+      } else {
+        throw new Error("That doesn't look like an ArcGIS MapServer or FeatureServer URL.");
+      }
+      const typed = $("pinField").value.trim();
+      const field = typed && (info.fields || []).some(f => f.name === typed) ? typed : findPinField(info.fields);
+      if (!field) throw new Error("Couldn't find a PPN field. Type its name in the PPN field box.");
+      const ownerField = pickOwnerField((info.fields || []).map(f => f.name));
+      state.ownerByPin.clear();
+      Object.assign(state, {
+        layerUrl, pinField: field, ownerField, fileMode: false, fetched: [],
+        geojson: /geojson/i.test(info.supportedQueryFormats || ""),
+        paging: !(info.advancedQueryCapabilities && info.advancedQueryCapabilities.supportsPagination === false)
+      });
+      parcels.clearLayers(); state.byPin.clear(); labels.clearLayers();
+      $("pinField").value = field;
+      $("ownerField").value = ownerField || "";
+      store.set("src", url); store.set("field", field); store.set("ownerField", ownerField || "");
+      status.className = "note ok";
+      status.textContent = `Connected to ${info.name || "parcel layer"} (PPN field: ${field}; owner field: ${ownerField || "none found — type one above and reconnect"}).`;
+      loadView();
+    } catch (e) {
+      status.className = "note err";
+      status.textContent = e.name === "TypeError"
+        ? "Couldn't reach that service from this page. The server may block browser requests. Try another URL, or load a parcel file below."
+        : e.message;
+      mapNote("Set a parcel source to load parcels");
+      console.error(e);
+    }
+  }
+  $("connectBtn").addEventListener("click", () => connect($("srcUrl").value));
+
+  // ---------- file mode ----------
+  $("fileIn").addEventListener("change", async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const status = $("srcStatus");
+    status.className = "note"; status.textContent = `Reading ${file.name}…`;
+    try {
+      const gj = JSON.parse(await file.text());
+      const feats = gj.type === "FeatureCollection" ? gj.features : (gj.features ? esriToGeo(gj) : []);
+      if (!feats.length) throw new Error("No features in that file.");
+      const typed = $("pinField").value.trim();
+      const field = typed && typed in (feats[0].properties || {}) ? typed
+        : findPinField(Object.keys(feats[0].properties || {}).map(name => ({ name })));
+      if (!field) throw new Error("Couldn't find a PPN field. Type its name in the PPN field box and load again.");
+      const ownerField = pickOwnerField(Object.keys(feats[0].properties || {}));
+      Object.assign(state, { fileMode: true, layerUrl: null, pinField: field, ownerField });
+      parcels.clearLayers(); state.byPin.clear(); state.ownerByPin.clear();
+      $("ownerField").value = ownerField || "";
+      const n = addFeatures(feats);
+      $("pinField").value = field;
+      map.fitBounds(parcels.getBounds());
+      status.className = "note ok"; status.textContent = `Loaded ${n.toLocaleString()} parcels from ${file.name}.`;
+      mapNote("");
+    } catch (err) {
+      status.className = "note err"; status.textContent = err.message || "Couldn't read that file.";
+    }
+  });
+
+  // ---------- selection ----------
+  function toggle(pin, force) {
+    const on = force === undefined ? !state.selected.has(pin) : force;
+    on ? state.selected.add(pin) : state.selected.delete(pin);
+    restyle(pin); renderSelection();
+  }
+  function renderSelection() {
+    const pins = [...state.selected].sort();
+    const n = pins.length;
+    $("selCount").textContent = n ? `${n} parcel${n === 1 ? "" : "s"} selected` : "No parcels selected";
+    $("selEmpty").hidden = n > 0;
+    $("copyBtn").disabled = !n;
+    $("copyBtn").textContent = n ? `Copy ${n} PPN${n === 1 ? "" : "s"}` : "Copy PPNs";
+    const ul = $("selList"); ul.innerHTML = "";
+    for (const p of pins) {
+      const li = document.createElement("li");
+      const s = document.createElement("span"); s.className = "pin"; s.textContent = fmt(p);
+      s.title = "Zoom to parcel";
+      s.addEventListener("click", () => { const l = state.byPin.get(p); if (l) map.fitBounds(l.getBounds(), { maxZoom: 19 }); else findPin(p, false); });
+      const o = document.createElement("span"); o.className = "own";
+      o.textContent = state.ownerByPin.get(p) || ""; o.title = o.textContent;
+      const x = document.createElement("button"); x.type = "button"; x.textContent = "×"; x.setAttribute("aria-label", `Remove ${dash(p)}`);
+      x.addEventListener("click", () => toggle(p, false));
+      li.append(s, o, x); ul.append(li);
+    }
+    store.set("selected", pins);
+  }
+  $("clearBtn").addEventListener("click", () => {
+    const pins = [...state.selected]; state.selected.clear(); pins.forEach(restyle); renderSelection();
+  });
+  $("dashes").checked = store.get("dashes", true);
+  $("dashes").addEventListener("change", () => { store.set("dashes", $("dashes").checked); renderSelection(); });
+
+  $("copyBtn").addEventListener("click", async () => {
+    const text = [...state.selected].sort().map(fmt).join("\n");
+    const n = state.selected.size;
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const ta = document.createElement("textarea"); ta.value = text; document.body.append(ta);
+      ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    toast(`Copied ${n} PPN${n === 1 ? "" : "s"}`);
+  });
+
+  // ---------- box select (Shift + drag; Shift + Alt + drag removes) ----------
+  (() => {
+    const el = map.getContainer();
+    let start = null, box = null, removing = false;
+    el.addEventListener("mousedown", e => {
+      if (!e.shiftKey || e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      map.dragging.disable();
+      removing = e.altKey;
+      const r = el.getBoundingClientRect();
+      start = { x: e.clientX - r.left, y: e.clientY - r.top };
+      box = document.createElement("div"); box.id = "boxsel"; if (removing) box.className = "remove";
+      $("mapwrap").append(box);
+      Object.assign(box.style, { left: start.x + "px", top: start.y + "px", width: "0px", height: "0px" });
+      document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+    }, true);
+    function move(e) {
+      const r = el.getBoundingClientRect();
+      const x = e.clientX - r.left, y = e.clientY - r.top;
+      Object.assign(box.style, { left: Math.min(x, start.x) + "px", top: Math.min(y, start.y) + "px",
+        width: Math.abs(x - start.x) + "px", height: Math.abs(y - start.y) + "px" });
+    }
+    function up(e) {
+      document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
+      const r = el.getBoundingClientRect();
+      const end = { x: e.clientX - r.left, y: e.clientY - r.top };
+      box.remove(); map.dragging.enable();
+      if (Math.abs(end.x - start.x) < 4 && Math.abs(end.y - start.y) < 4) return;
+      const bounds = L.latLngBounds(map.containerPointToLatLng([start.x, start.y]), map.containerPointToLatLng([end.x, end.y]));
+      let n = 0;
+      state.byPin.forEach((layer, pin) => {
+        if (!bounds.contains(layer.getBounds().getCenter())) return;
+        if (removing ? state.selected.delete(pin) : !state.selected.has(pin) && state.selected.add(pin)) n++;
+        restyle(pin);
+      });
+      renderSelection();
+      if (n) toast(`${removing ? "Removed" : "Added"} ${n} parcel${n === 1 ? "" : "s"}`);
+      else if (!state.byPin.size) toast("No parcels loaded here yet");
+    }
+  })();
+
+  // ---------- find by PPN or address ----------
+  async function fetchPins(pins) {
+    if (state.fileMode || !state.layerUrl) return 0;
+    const need = pins.filter(p => !state.byPin.has(p));
+    let added = 0;
+    for (let i = 0; i < need.length; i += 100) {
+      const chunk = need.slice(i, i + 100);
+      const where = `${state.pinField} IN (${chunk.map(p => `'${esc(p)}'`).join(",")})`;
+      added += addFeatures(await queryParcels({ where }));
+    }
+    return added;
+  }
+  async function findPin(pin, select = true) {
+    try { await fetchPins([pin]); } catch (e) { console.error(e); }
+    const l = state.byPin.get(pin);
+    if (!l) { toast(`${dash(pin)} not found`); return; }
+    map.fitBounds(l.getBounds(), { maxZoom: 19 });
+    if (select) toggle(pin, true);
+  }
+  $("searchForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const q = $("q").value.trim(); if (!q) return;
+    const digits = q.replace(/[\s-]/g, "");
+    if (/^\d{6,9}$/.test(digits)) { findPin(norm(digits)); return; }
+    try {
+      const data = await getJSON("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+        { SingleLine: q, location: "-81.69,41.48", maxLocations: 1, outFields: "Match_addr", f: "json" });
+      const c = data.candidates && data.candidates[0];
+      if (!c) { toast("Address not found"); return; }
+      map.setView([c.location.y, c.location.x], 19);
+    } catch (err) {
+      toast("Address search isn't available. Search by PPN instead.");
+      console.error(err);
+    }
+  });
+
+  // ---------- show a pasted list ----------
+  $("showBtn").addEventListener("click", async () => {
+    const pins = [...new Set($("pasteIn").value.split(/[\s,;]+/).map(norm).filter(Boolean))];
+    const msg = $("showMsg");
+    const old = [...state.shown]; state.shown.clear(); old.forEach(restyle);
+    if (!pins.length) { msg.className = "note err"; msg.textContent = "Paste at least one PPN."; $("selectShownBtn").disabled = true; return; }
+    msg.className = "note"; msg.textContent = `Looking up ${pins.length} parcel${pins.length === 1 ? "" : "s"}…`;
+    try { await fetchPins(pins); } catch (e) { console.error(e); }
+    pins.forEach(p => state.shown.add(p)); pins.forEach(restyle);
+    const found = pins.filter(p => state.byPin.has(p));
+    const missing = pins.filter(p => !state.byPin.has(p));
+    if (found.length) {
+      const b = L.latLngBounds(found.map(p => state.byPin.get(p).getBounds()));
+      map.fitBounds(b, { maxZoom: 19, padding: [30, 30] });
+    }
+    msg.className = missing.length ? "note err" : "note ok";
+    msg.textContent = `Showing ${found.length} of ${pins.length}.` +
+      (missing.length ? ` Not found: ${missing.slice(0, 8).map(dash).join(", ")}${missing.length > 8 ? ` and ${missing.length - 8} more` : ""}.` : "");
+    $("selectShownBtn").disabled = !found.length;
+  });
+  $("selectShownBtn").addEventListener("click", () => {
+    let n = 0;
+    state.shown.forEach(p => { if (state.byPin.has(p) && !state.selected.has(p)) { state.selected.add(p); n++; } restyle(p); });
+    renderSelection(); toast(`Added ${n} parcel${n === 1 ? "" : "s"}`);
+  });
+  $("clearShownBtn").addEventListener("click", () => {
+    const old = [...state.shown]; state.shown.clear(); old.forEach(restyle);
+    $("pasteIn").value = ""; $("showMsg").textContent = ""; $("selectShownBtn").disabled = true;
+  });
+
+  // ---------- owner labels + highlight ----------
+  function setLabelMode(mode) {
+    state.labelMode = mode; store.set("labelMode", mode);
+    $("lblPin").setAttribute("aria-pressed", mode === "pin");
+    $("lblOwner").setAttribute("aria-pressed", mode === "owner");
+    refreshLabels();
+    if (mode === "owner" && !state.ownerField) toast("No owner field found. Set one under Parcel source.");
+    else if (map.getZoom() < LABEL_ZOOM) toast("Zoom in closer to see labels");
+  }
+  $("lblPin").addEventListener("click", () => setLabelMode("pin"));
+  $("lblOwner").addEventListener("click", () => setLabelMode("owner"));
+
+  function matchesInView() {
+    if (!state.ownerQ) return [];
+    const view = map.getBounds(), out = [];
+    state.byPin.forEach((layer, pin) => { if (ownerMatch(pin) && view.contains(layer.getBounds().getCenter())) out.push(pin); });
+    return out;
+  }
+  function updateOwnerMsg() {
+    const msg = $("ownerMsg");
+    if (!state.ownerQ) { msg.textContent = ""; $("selectOwnerBtn").disabled = true; return; }
+    if (!state.ownerField) { msg.textContent = "No owner field set."; $("selectOwnerBtn").disabled = true; return; }
+    const n = matchesInView().length;
+    msg.innerHTML = `<span class="swatch amber" aria-hidden="true"></span>${n} in view`;
+    $("selectOwnerBtn").disabled = !n;
+  }
+  let ownerTimer;
+  $("ownerQ").addEventListener("input", () => {
+    clearTimeout(ownerTimer);
+    ownerTimer = setTimeout(() => {
+      state.ownerQ = $("ownerQ").value.trim().toLowerCase();
+      store.set("ownerQ", $("ownerQ").value);
+      restyleAll(); updateOwnerMsg();
+    }, 200);
+  });
+  $("selectOwnerBtn").addEventListener("click", () => {
+    let n = 0;
+    matchesInView().forEach(p => { if (!state.selected.has(p)) { state.selected.add(p); n++; } restyle(p); });
+    renderSelection(); toast(`Added ${n} parcel${n === 1 ? "" : "s"}`);
+  });
+  map.on("moveend", updateOwnerMsg);
+
+  // ---------- start ----------
+  $("srcUrl").value = store.get("src", DEFAULT_SRC);
+  $("pinField").value = store.get("field", "");
+  $("ownerField").value = store.get("ownerField", "");
+  $("ownerQ").value = store.get("ownerQ", "");
+  state.ownerQ = $("ownerQ").value.trim().toLowerCase();
+  $("lblPin").setAttribute("aria-pressed", state.labelMode === "pin");
+  $("lblOwner").setAttribute("aria-pressed", state.labelMode === "owner");
+  renderSelection();
+  connect($("srcUrl").value);
+})();
+</script>
+</body>
+</html>
