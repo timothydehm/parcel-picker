@@ -128,6 +128,25 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
   .leaflet-container { font-family: var(--font); }
 
+  /* saved selections */
+  #savedList { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  #savedList li { display: flex; align-items: center; gap: 6px; padding: 7px 2px; border-bottom: 1px solid #EBEEED; }
+  #savedList .meta { flex: 1; min-width: 0; }
+  #savedList .name { display: block; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #savedList .info { display: block; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #savedList button { padding: 5px 9px; font-size: 13px; }
+  #savedList button.del { border: none; background: none; padding: 2px 6px; color: var(--muted); font-size: 16px; line-height: 1; }
+  #savedList button.del:hover { color: var(--flag-deep); }
+  #savedCount { font-weight: 500; color: var(--muted); }
+
+  /* locate control */
+  .locate-btn { width: 34px; height: 34px; padding: 0; border: none; border-radius: 4px; display: grid; place-items: center; background: var(--white); color: var(--ink); }
+  .locate-btn:hover { background: #F4F4F4; border: none; }
+  .locate-btn[aria-pressed="true"] { color: #0E8FBF; }
+  .locate-btn.waiting svg { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .locate-btn.waiting svg { animation: none; } }
+
   @media (max-width: 760px) {
     #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     #panel { max-height: 48vh; border-right: none; border-bottom: 1px solid var(--line); }
@@ -176,6 +195,18 @@
       </div>
     </section>
 
+    <details id="saved">
+      <summary>Saved selections <span id="savedCount"></span></summary>
+      <div class="body">
+        <form id="saveForm" class="row" autocomplete="off">
+          <input type="text" id="saveName" placeholder="Name this selection" aria-label="Name for the current selection">
+          <button type="submit" id="saveBtn" disabled>Save</button>
+        </form>
+        <ul id="savedList"></ul>
+        <p class="note" id="savedEmpty">Nothing saved yet. Saved selections stay in this browser on this device.</p>
+      </div>
+    </details>
+
     <details id="showList">
       <summary>Show a list on the map</summary>
       <div class="body">
@@ -217,7 +248,8 @@
     <p class="hint">
       Click a parcel to select or unselect it.<br>
       <kbd>Shift</kbd> + drag to select a block.<br>
-      <kbd>Shift</kbd> + <kbd>Alt</kbd> + drag to unselect.
+      <kbd>Shift</kbd> + <kbd>Alt</kbd> + drag to unselect.<br>
+      Tap the location button on the map to see parcels around you.
     </p>
   </aside>
 
@@ -238,7 +270,7 @@
 
   const store = {
     get(k, d) { try { const v = localStorage.getItem("pp." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-    set(k, v) { try { localStorage.setItem("pp." + k, JSON.stringify(v)); } catch {} }
+    set(k, v) { try { localStorage.setItem("pp." + k, JSON.stringify(v)); return true; } catch { return false; } }
   };
 
   // ---------- helpers ----------
@@ -532,6 +564,7 @@
     $("selEmpty").hidden = n > 0;
     $("copyBtn").disabled = !n;
     $("copyBtn").textContent = n ? `Copy ${n} PPN${n === 1 ? "" : "s"}` : "Copy PPNs";
+    $("saveBtn").disabled = !n;
     const ul = $("selList"); ul.innerHTML = "";
     for (const p of pins) {
       const li = document.createElement("li");
@@ -712,6 +745,145 @@
   });
   map.on("moveend", updateOwnerMsg);
 
+  // ---------- saved selections ----------
+  const getSaved = () => store.get("saved", []);
+  const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const sameSet = pins => pins.length === state.selected.size && pins.every(p => state.selected.has(p));
+
+  function renderSaved() {
+    const list = getSaved().sort((a, b) => b.at.localeCompare(a.at));
+    $("savedCount").textContent = list.length ? `(${list.length})` : "";
+    $("savedEmpty").hidden = list.length > 0;
+    const ul = $("savedList"); ul.innerHTML = "";
+    for (const s of list) {
+      const li = document.createElement("li");
+      const meta = document.createElement("span"); meta.className = "meta";
+      const nm = document.createElement("span"); nm.className = "name"; nm.textContent = s.name; nm.title = s.name;
+      const info = document.createElement("span"); info.className = "info";
+      info.textContent = `${s.pins.length} parcel${s.pins.length === 1 ? "" : "s"}, saved ${fmtDate(s.at)}`;
+      meta.append(nm, info);
+      const load = document.createElement("button"); load.type = "button"; load.textContent = "Load";
+      load.title = "Make this the current selection";
+      load.addEventListener("click", () => loadSaved(s));
+      const show = document.createElement("button"); show.type = "button"; show.textContent = "Show";
+      show.title = "Outline these parcels without changing the current selection";
+      show.addEventListener("click", () => showSaved(s));
+      const del = document.createElement("button"); del.type = "button"; del.className = "del"; del.textContent = "×";
+      del.setAttribute("aria-label", `Delete ${s.name}`);
+      del.addEventListener("click", () => deleteSaved(s.name));
+      li.append(meta, load, show, del); ul.append(li);
+    }
+  }
+
+  $("saveForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const name = $("saveName").value.trim();
+    const pins = [...state.selected].sort();
+    if (!pins.length) return;
+    if (!name) { $("saveName").focus(); toast("Name the selection first"); return; }
+    const list = getSaved();
+    const i = list.findIndex(s => s.name.toLowerCase() === name.toLowerCase());
+    if (i >= 0 && !confirm(`Replace the saved selection "${list[i].name}"?`)) return;
+    const c = map.getCenter();
+    const entry = { name, pins, at: new Date().toISOString(), view: { c: [c.lat, c.lng], z: map.getZoom() } };
+    if (i >= 0) list.splice(i, 1, entry); else list.push(entry);
+    if (!store.set("saved", list)) { toast("Couldn't save. Browser storage is full or blocked."); return; }
+    $("saveName").value = "";
+    renderSaved();
+    toast(`Saved "${name}"`);
+  });
+
+  function fitPins(pins, fallbackView) {
+    const found = pins.filter(p => state.byPin.has(p));
+    if (found.length) map.fitBounds(L.latLngBounds(found.map(p => state.byPin.get(p).getBounds())), { maxZoom: 19, padding: [30, 30] });
+    else if (fallbackView) map.setView(fallbackView.c, fallbackView.z);
+    return found.length;
+  }
+
+  async function loadSaved(s) {
+    if (state.selected.size && !sameSet(s.pins) &&
+        !confirm(`Replace the ${state.selected.size} parcel${state.selected.size === 1 ? "" : "s"} selected now with "${s.name}"? Save the current selection first if you want to keep it.`)) return;
+    const old = [...state.selected];
+    state.selected.clear(); s.pins.forEach(p => state.selected.add(p));
+    old.forEach(restyle); s.pins.forEach(restyle); renderSelection();
+    try { await fetchPins(s.pins); } catch (e) { console.error(e); }
+    s.pins.forEach(restyle); renderSelection();
+    fitPins(s.pins, s.view);
+    toast(`Loaded "${s.name}"`);
+  }
+
+  function showSaved(s) {
+    $("pasteIn").value = s.pins.map(dash).join("\n");
+    $("showList").open = true;
+    $("showBtn").click();
+  }
+
+  function deleteSaved(name) {
+    if (!confirm(`Delete the saved selection "${name}"?`)) return;
+    store.set("saved", getSaved().filter(s => s.name !== name));
+    renderSaved();
+    toast(`Deleted "${name}"`);
+  }
+
+  // ---------- my location ----------
+  const mePane = map.createPane("me");
+  mePane.style.zIndex = 450; mePane.style.pointerEvents = "none";
+  const meRenderer = L.svg({ pane: "me" });
+  const loc = { watch: null, dot: null, ring: null, first: true, btn: null };
+  const ftAcc = m => Math.round(m * 3.281).toLocaleString();
+
+  function setLocBtn(mode) {   // "off" | "waiting" | "on"
+    if (!loc.btn) return;
+    loc.btn.setAttribute("aria-pressed", mode !== "off");
+    loc.btn.classList.toggle("waiting", mode === "waiting");
+    loc.btn.title = mode === "off" ? "Show my location" : "Stop showing my location";
+    loc.btn.setAttribute("aria-label", loc.btn.title);
+  }
+  function startLocate() {
+    if (!("geolocation" in navigator)) { toast("Location isn't available in this browser"); return; }
+    if (!window.isSecureContext) { toast("Location only works when this page is opened from an https address"); return; }
+    loc.first = true; setLocBtn("waiting");
+    loc.watch = navigator.geolocation.watchPosition(onFix, onLocErr, { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+  }
+  function stopLocate() {
+    if (loc.watch !== null) navigator.geolocation.clearWatch(loc.watch);
+    loc.watch = null;
+    if (loc.dot) { map.removeLayer(loc.dot); map.removeLayer(loc.ring); loc.dot = loc.ring = null; }
+    setLocBtn("off");
+  }
+  function onFix(p) {
+    const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy;
+    if (!loc.dot) {
+      loc.ring = L.circle(ll, { radius: acc, renderer: meRenderer, interactive: false, color: "#1FB5E8", weight: 1, fillColor: "#1FB5E8", fillOpacity: 0.12 }).addTo(map);
+      loc.dot = L.circleMarker(ll, { radius: 7, renderer: meRenderer, interactive: false, color: "#FFFFFF", weight: 2.5, fillColor: "#1FB5E8", fillOpacity: 1 }).addTo(map);
+    } else { loc.ring.setLatLng(ll).setRadius(acc); loc.dot.setLatLng(ll); }
+    if (loc.first) {
+      loc.first = false;
+      map.setView(ll, Math.max(map.getZoom(), 18));
+      toast(acc > 150 ? `Located within about ${ftAcc(acc)} ft` : "Showing parcels around you");
+    }
+    setLocBtn("on");
+  }
+  function onLocErr(err) {
+    if (err.code === 1) { stopLocate(); toast("Location is blocked. Allow it for this site in your browser settings."); return; }
+    if (loc.first) { stopLocate(); toast("Couldn't get your location. Try again outdoors or with Wi-Fi on."); }
+  }
+
+  const LocateCtl = L.Control.extend({
+    options: { position: "topleft" },
+    onAdd() {
+      const wrap = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+      const btn = L.DomUtil.create("button", "locate-btn", wrap);
+      btn.type = "button";
+      btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+      L.DomEvent.disableClickPropagation(wrap);
+      L.DomEvent.on(btn, "click", () => loc.watch === null ? startLocate() : stopLocate());
+      loc.btn = btn; setLocBtn("off");
+      return wrap;
+    }
+  });
+  new LocateCtl().addTo(map);
+
   // ---------- start ----------
   $("srcUrl").value = store.get("src", DEFAULT_SRC);
   $("pinField").value = store.get("field", "");
@@ -721,6 +893,7 @@
   $("lblPin").setAttribute("aria-pressed", state.labelMode === "pin");
   $("lblOwner").setAttribute("aria-pressed", state.labelMode === "owner");
   renderSelection();
+  renderSaved();
   connect($("srcUrl").value);
 })();
 </script>
